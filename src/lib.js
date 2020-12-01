@@ -3,18 +3,17 @@ import chalk from 'chalk';
 
 const { log } = console;
 
-const stringifyMessage = message => {
-  if (typeof(message) === 'object') {
+const stringifyMessage = (message) => {
+  if (typeof message === 'object') {
     return JSON.stringify(message);
   }
   return message;
 };
 
-const info = message => log(chalk.cyan(stringifyMessage(message)));
-const error = message => log(chalk.red(stringifyMessage(message)));
+const info = (message) => log(chalk.cyan(stringifyMessage(message)));
+const error = (message) => log(chalk.red(stringifyMessage(message)));
 
 export default (session) => {
-
   session = session || Object;
 
   const Store = session.Store || class Store {};
@@ -31,30 +30,34 @@ export default (session) => {
      * @param {object} options
      */
     constructor(options) {
-
       options = options || {};
+
+      // const { unsecured, ...options } = options;
 
       super(options);
 
-      this.hostname       = options.hostname    || 'localhost';
-      this.port           = options.port        || 5984;
-      this.username       = options.username    || 'admin';
-      this.password       = options.password    || 'password';
-      this.databaseName   = options.database    || 'sessions';
-      
+      this.hostname = options.hostname || 'localhost';
+      this.port = options.port || 5984;
+      this.username = options.username || 'admin';
+      this.password = options.password || 'password';
+      this.databaseName = options.database || 'sessions';
+
       this.setErrorCount = 0;
 
-      this.connection = nano(
-        this.generateConnectionURL()
-      );
+      if (options.unsecured) {
+        // username & password are ignored
+        this.connection = nano(this.generateUnsecuredConnectionURL());
+      } else {
+        this.connection = nano(this.generateConnectionURL());
+      }
     }
 
     async initializeDatabase() {
       try {
         const db = await new Promise((resolve, reject) => {
-        /**
-         * Gets a list of databases existing on the CouchDB Server
-         */
+          /**
+           * Gets a list of databases existing on the CouchDB Server
+           */
           this.connection.db.list((err, body) => {
             if (err) {
               this.showError(
@@ -64,23 +67,23 @@ export default (session) => {
               reject(err);
             } else {
               if (body.indexOf(this.databaseName) === -1) {
-              /**
-               * Creates a new database only if it doesn't already exist
-               */
+                /**
+                 * Creates a new database only if it doesn't already exist
+                 */
                 this.connection.db.create(this.databaseName, (err) => {
                   if (err) {
                     this.showError(err, 'Error while creating the database.');
                     reject(err);
                   }
                   /**
-                 * Resolves the DB once it has been created
-                 */
-                  resolve(this.connection.db.use(this.databaseName));  
+                   * Resolves the DB once it has been created
+                   */
+                  resolve(this.connection.db.use(this.databaseName));
                 });
               } else {
-              /**
-               * If already exists then it resolves it right away
-               */
+                /**
+                 * If already exists then it resolves it right away
+                 */
                 resolve(this.connection.db.use(this.databaseName));
               }
             }
@@ -91,7 +94,6 @@ export default (session) => {
       } catch {
         return Promise.reject('unable to initialize database');
       }
-      
     }
 
     showError(err, message) {
@@ -103,35 +105,45 @@ export default (session) => {
       return `http://${this.username}:${this.password}@${this.hostname}:${this.port}`;
     }
 
+    generateUnsecuredConnectionURL() {
+      return `http://${this.hostname}:${this.port}`;
+    }
+
     /**
      * Converts session_id to a CouchDB _id
      * @param {string} sid
      * @return {string}
      */
-    sidToCid (sid) { return `c${sid}`; }
+    sidToCid(sid) {
+      return `c${sid}`;
+    }
 
     /**
      * Gets a proper instance of DB to perform actions
      * @param {function} fn
      */
     execute(fn) {
-      this.database ?
-        fn(this.database) :
-        this.initializeDatabase().then(db => fn(db))
-          .catch(() => error('could not execute function'));
+      this.database
+        ? fn(this.database)
+        : this.initializeDatabase()
+            .then((db) => fn(db))
+            .catch(() => error('could not execute function'));
     }
 
     /**
      * Returns a session
-     * @param {string} sid 
-     * @param {function} callback 
+     * @param {string} sid
+     * @param {function} callback
      * @return {object} the session
      */
     get(sid, callback) {
-      this.execute(db => {
+      this.execute((db) => {
         db.get(this.sidToCid(sid), (err, doc) => {
           if (err) {
-            this.showError(err, 'Attempt to get cookie information from DB failed.');
+            this.showError(
+              err,
+              'Attempt to get cookie information from DB failed.'
+            );
           }
           callback(err, doc ? doc : null);
         });
@@ -145,7 +157,7 @@ export default (session) => {
      * @param {function} callback
      */
     set(sid, session, callback) {
-      this.execute(db => (
+      this.execute((db) =>
         /**
          * Prepending `c` to _id because _id fields are not allowed to start
          * with an underscore.
@@ -160,39 +172,44 @@ export default (session) => {
              * handling of document updates, and the way to solve this is by
              * literally trying again.
              */
-            this.get(sid, (err, doc) => (
+            this.get(sid, (err, doc) =>
               this.set(sid, { ...session, _rev: doc._rev }, callback)
-            ));
+            );
           } else {
             this.setErrorCount = 0;
             callback(err);
           }
         })
-      ));
+      );
     }
 
     /**
      * Destroys an existing session
-     * @param {string} sid 
-     * @param {function} callback 
+     * @param {string} sid
+     * @param {function} callback
      */
     destroy(sid, callback) {
-      this.get(sid, (err, doc) => (
-        this.execute(db => db.destroy(doc._id, doc._rev, (err2) => {
-          if (err2) {
-            this.showError(err2, 'Attempt to destroy the cookie in DB failed.');
-          }
-          callback(err2);
-        }))
-      ));
+      this.get(sid, (err, doc) =>
+        this.execute((db) =>
+          db.destroy(doc._id, doc._rev, (err2) => {
+            if (err2) {
+              this.showError(
+                err2,
+                'Attempt to destroy the cookie in DB failed.'
+              );
+            }
+            callback(err2);
+          })
+        )
+      );
     }
 
     /**
      * Clears all the documents in the DB
-     * @param {function} callback 
+     * @param {function} callback
      */
     clear(callback) {
-      this.execute(db => {
+      this.execute((db) => {
         const docs = [];
         db.list({ include_docs: true }, (err, body) => {
           if (err) {
@@ -202,9 +219,9 @@ export default (session) => {
             );
             callback(err);
           } else {
-            body.rows.forEach(doc => (
+            body.rows.forEach((doc) =>
               docs.push({ ...doc.doc, _deleted: true })
-            ));
+            );
             db.bulk({ docs }, (err) => {
               if (err) {
                 this.showError(
@@ -221,10 +238,10 @@ export default (session) => {
 
     /**
      * Gets the number of documents in the DB
-     * @param {function} callback 
+     * @param {function} callback
      */
     length(callback) {
-      this.execute(db => (
+      this.execute((db) =>
         db.list((err, body) => {
           if (err) {
             this.showError(
@@ -236,15 +253,15 @@ export default (session) => {
             callback(err, body.rows.length);
           }
         })
-      ));
+      );
     }
 
     /**
      * Gets all the documents in the DB
-     * @param {function} callback 
+     * @param {function} callback
      */
     all(callback) {
-      this.execute(db => (
+      this.execute((db) =>
         db.list({ include_docs: true }, (err, body) => {
           if (err) {
             this.showError(
@@ -253,39 +270,41 @@ export default (session) => {
             );
             callback(err, null);
           } else {
-            callback(err, body.rows.map(r => r.doc));
+            callback(
+              err,
+              body.rows.map((r) => r.doc)
+            );
           }
         })
-      ));
+      );
     }
 
     /**
-     * 
-     * @param {string} sid 
-     * @param {object} session 
-     * @param {function} callback 
+     *
+     * @param {string} sid
+     * @param {object} session
+     * @param {function} callback
      */
     touch(sid, session, callback) {
-      this.execute(db => {
-        db.insert({
-          ...session,
-          cookie: {
-            ...session.cookie,
-            expires: (
-              session.expires && session.maxAge ?
-                new Date(new Date().getTime() + session.maxAge) :
-                session.expires
-            )
+      this.execute((db) => {
+        db.insert(
+          {
+            ...session,
+            cookie: {
+              ...session.cookie,
+              expires:
+                session.expires && session.maxAge
+                  ? new Date(new Date().getTime() + session.maxAge)
+                  : session.expires,
+            },
+          },
+          (err) => {
+            if (err) {
+              this.showError(err, 'Attempt to touch failed.');
+            }
+            callback(err);
           }
-        }, (err) => {
-          if (err) {
-            this.showError(
-              err,
-              'Attempt to touch failed.'
-            );
-          }
-          callback(err);
-        });
+        );
       });
     }
   }
